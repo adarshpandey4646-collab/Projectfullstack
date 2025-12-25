@@ -1,0 +1,253 @@
+✅ PHASE 1 — LARAVEL (HUMANIZED)
+app/Models/Article.php
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Article extends Model
+{
+    protected $fillable = [
+        'title',
+        'slug',
+        'content',
+        'source_url',
+        'type',
+        'references'
+    ];
+
+    protected $casts = [
+        'references' => 'array'
+    ];
+}
+app/Http/Controllers/ArticleController.php
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Article;
+use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+
+class ArticleController extends Controller
+{
+    public function index()
+    {
+        return Article::orderByDesc('created_at')->get();
+    }
+
+    public function show(int $id)
+    {
+        return Article::findOrFail($id);
+    }
+
+    public function store(Request $request)
+    {
+        return Article::create([
+            'title'      => $request->title,
+            'slug'       => Str::slug($request->title) . '-' . now()->timestamp,
+            'content'    => $request->content,
+            'source_url' => $request->source_url,
+            'type'       => $request->type ?? 'original',
+            'references' => $request->references
+        ]);
+    }
+
+    public function update(Request $request, int $id)
+    {
+        $article = Article::findOrFail($id);
+        $article->update($request->only([
+            'title','content','type','references'
+        ]));
+
+        return $article;
+    }
+
+    public function destroy(int $id)
+    {
+        Article::where('id', $id)->delete();
+        return ['success' => true];
+    }
+}
+app/Console/Commands/ScrapeBeyondChats.php
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+use GuzzleHttp\Client;
+use Symfony\Component\DomCrawler\Crawler;
+use App\Models\Article;
+use Illuminate\Support\Str;
+
+class ScrapeBeyondChats extends Command
+{
+    protected $signature = 'scrape:beyondchats';
+
+    public function handle()
+    {
+        $http = new Client();
+        $listPage = $http->get('https://beyondchats.com/blogs/')->getBody();
+        $crawler = new Crawler($listPage);
+
+        $lastPageUrl = $crawler
+            ->filter('.pagination a')
+            ->last()
+            ->attr('href');
+
+        $lastPageHtml = $http->get($lastPageUrl)->getBody();
+        $lastPage = new Crawler($lastPageHtml);
+
+        $articleLinks = $lastPage
+            ->filter('.blog-item a')
+            ->each(fn ($node) => $node->attr('href'));
+
+        foreach (array_slice($articleLinks, 0, 5) as $url) {
+            if (Article::where('source_url', $url)->exists()) {
+                continue;
+            }
+
+            $html = $http->get($url)->getBody();
+            $page = new Crawler($html);
+
+            $title = trim($page->filter('h1')->text());
+            $content = trim($page->filter('article')->text());
+
+            Article::create([
+                'title'      => $title,
+                'slug'       => Str::slug($title) . '-' . now()->timestamp,
+                'content'    => $content,
+                'source_url' => $url
+            ]);
+        }
+    }
+}
+✅ PHASE 2 — NODE BOT (HUMANIZED)
+node-bot/index.js
+import axios from "axios"
+import cheerio from "cheerio"
+import puppeteer from "puppeteer"
+import OpenAI from "openai"
+
+const API_URL = "http://127.0.0.1:8000/api/articles"
+const openai = new OpenAI({ apiKey: process.env.OPENAI_KEY })
+
+async function fetchLatestArticle() {
+    const { data } = await axios.get(API_URL)
+    return data[0]
+}
+
+async function searchGoogle(query) {
+    const browser = await puppeteer.launch({ headless: "new" })
+    const page = await browser.newPage()
+
+    await page.goto(`https://www.google.com/search?q=${encodeURIComponent(query)}`)
+    const links = await page.evaluate(() =>
+        [...document.querySelectorAll("a")]
+            .map(a => a.href)
+            .filter(url => url.startsWith("http"))
+            .slice(0, 2)
+    )
+
+    await browser.close()
+    return links
+}
+
+async function scrapeArticle(url) {
+    const response = await axios.get(url)
+    const $ = cheerio.load(response.data)
+    return $("article").text() || $("p").text()
+}
+
+async function rewriteArticle(original, ref1, ref2) {
+    const prompt = `
+Original Article:
+${original}
+
+Reference Article 1:
+${ref1}
+
+Reference Article 2:
+${ref2}
+
+Rewrite professionally with improved formatting and SEO.
+`
+
+    const result = await openai.chat.completions.create({
+        model: "gpt-4o",
+        messages: [{ role: "user", content: prompt }]
+    })
+
+    return result.choices[0].message.content
+}
+
+async function publishUpdatedArticle(baseArticle, content, references) {
+    await axios.post(API_URL, {
+        title: `${baseArticle.title} Updated`,
+        content: content + `
+<h3>References</h3>
+<ul>
+<li>${references[0]}</li>
+<li>${references[1]}</li>
+</ul>`,
+        type: "updated",
+        references
+    })
+}
+
+async function run() {
+    const article = await fetchLatestArticle()
+    const references = await searchGoogle(article.title)
+    const refContent1 = await scrapeArticle(references[0])
+    const refContent2 = await scrapeArticle(references[1])
+    const updatedContent = await rewriteArticle(
+        article.content,
+        refContent1,
+        refContent2
+    )
+
+    await publishUpdatedArticle(article, updatedContent, references)
+    process.exit()
+}
+
+run()
+✅ PHASE 3 — REACT FRONTEND (HUMANIZED)
+frontend-react/src/App.jsx
+import { useEffect, useState } from "react"
+import axios from "axios"
+
+const API_URL = "http://127.0.0.1:8000/api/articles"
+
+export default function App() {
+    const [articles, setArticles] = useState([])
+
+    useEffect(() => {
+        axios.get(API_URL).then(res => setArticles(res.data))
+    }, [])
+
+    return (
+        <div style={{
+            padding: 24,
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            gap: 20
+        }}>
+            {articles.map(article => (
+                <div key={article.id} style={{
+                    border: "1px solid #ddd",
+                    borderRadius: 6,
+                    padding: 16
+                }}>
+                    <h3>{article.title}</h3>
+                    <small>{article.type.toUpperCase()}</small>
+                    <div
+                        dangerouslySetInnerHTML={{
+                            __html: article.content.slice(0, 300)
+                        }}
+                    />
+                </div>
+            ))}
+        </div>
+    )
+}
